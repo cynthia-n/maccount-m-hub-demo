@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { AppError, ErrorCode } from '@mhub/shared'
+import { AppError, ErrorCode, renderText, resolveSequence, type SequenceDef } from '@mhub/shared'
 import type { Db, QueryFn } from '../db'
 import { scheduleTaskIn } from '../workers/due-tasks'
 import { emitWs } from '../ws/outbox'
@@ -21,60 +21,13 @@ export const sequenceDefSchema = z.object({
     )
     .min(1),
 })
-export type SequenceDef = z.infer<typeof sequenceDefSchema>
+export type { SequenceDef }
 
 export const sequenceRunBody = z.object({
   sequenceId: z.string().uuid(),
   vars: z.record(z.string()).default({}),
   stepVars: z.record(z.record(z.string())).default({}),
 })
-
-export const PLACEHOLDER = /\{([A-Za-z0-9_]+)\}/g
-
-export interface ResolvedStep {
-  resolved: Record<string, string>
-  sources: Record<string, string>
-}
-
-/**
- * 变量解析（纯函数）：
- * - vars 中 "" = 未提供
- * - stepVars[i][k] = "" 表示该步不改；给值则从该步起覆盖到更晚步再给值
- * - varSources：'default' 或 'step:<index>'（沿用时标最初给出值的那一步）
- */
-export function resolveSequence(
-  steps: SequenceDef['steps'],
-  vars: Record<string, string>,
-  stepVars: Record<string, Record<string, string>>,
-): { ok: true; perStep: ResolvedStep[] } | { ok: false; stepIndex: number; key: string } {
-  const effective = new Map<string, { value: string; source: string }>()
-  for (const [k, v] of Object.entries(vars)) {
-    if (v !== '') effective.set(k, { value: v, source: 'default' })
-  }
-
-  const perStep: ResolvedStep[] = []
-  for (const step of steps) {
-    const sv = stepVars[String(step.index)] ?? {}
-    for (const [k, v] of Object.entries(sv)) {
-      if (v !== '') effective.set(k, { value: v, source: `step:${step.index}` })
-    }
-    const resolved: Record<string, string> = {}
-    const sources: Record<string, string> = {}
-    for (const match of step.text.matchAll(PLACEHOLDER)) {
-      const key = match[1]!
-      const hit = effective.get(key)
-      if (!hit) return { ok: false, stepIndex: step.index, key }
-      resolved[key] = hit.value
-      sources[key] = hit.source
-    }
-    perStep.push({ resolved, sources })
-  }
-  return { ok: true, perStep }
-}
-
-export function renderText(text: string, resolved: Record<string, string>): string {
-  return text.replace(PLACEHOLDER, (_, key: string) => resolved[key] ?? `{${key}}`)
-}
 
 export async function createSequence(db: Db, def: SequenceDef): Promise<string> {
   const steps = [...def.steps].sort((a, b) => a.index - b.index)

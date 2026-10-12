@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveSequence, renderText } from '../../src/domain/sequence'
+import { resolveSequence, renderText } from '@mhub/shared'
 
 const steps = [
   { index: 1, accountRole: 'admin' as const, text: '{event} 将于 {time} 开始', delaySeconds: 1 },
