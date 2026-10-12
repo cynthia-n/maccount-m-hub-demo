@@ -4,6 +4,10 @@ import { createDb, type Db } from '../src/db'
 import { freshDatabase, EXPECTED_SCHEMA_VERSION } from '../src/migrate'
 import { ensureSeed } from '../src/seed'
 import { buildApp } from '../src/app'
+import { buildGatewayMock } from '../../mocks/gateway/src/app'
+import type { MockState } from '../../mocks/gateway/src/state'
+
+export const SCHEMA_VERSION = EXPECTED_SCHEMA_VERSION
 
 // 集成测试基座：测试库全新迁移 + 进程内 app（fastify.inject 调用，不占端口）
 export interface TestCtx {
@@ -31,7 +35,48 @@ export async function teardownTest(ctx: TestCtx): Promise<void> {
   await ctx.db.close()
 }
 
-export const SCHEMA_VERSION = EXPECTED_SCHEMA_VERSION
+// 网关 mock：临时端口 + 控制面便捷方法
+export interface MockCtx {
+  state: MockState
+  url: string
+  ctl: (op: string, params?: Record<string, unknown>) => Promise<unknown>
+  stateDump: <T = Record<string, unknown>>() => Promise<T>
+  close: () => Promise<void>
+}
+
+export async function startGatewayMock(seedAccounts?: string[]): Promise<MockCtx> {
+  const { app, state } = buildGatewayMock({ seedAccounts })
+  await app.listen({ port: 0, host: '127.0.0.1' })
+  const addr = app.server.address()
+  const port = typeof addr === 'object' && addr ? addr.port : 0
+  return {
+    state,
+    url: `http://127.0.0.1:${port}`,
+    ctl: async (op, params = {}) => {
+      const res = await app.inject({ method: 'POST', url: '/__ctl', payload: { op, ...params } })
+      return res.json()
+    },
+    stateDump: async <T,>() => {
+      const res = await app.inject({ method: 'GET', url: '/__state' })
+      return res.json() as T
+    },
+    close: () => app.close(),
+  }
+}
+
+/** 轮询等待条件成立（禁止盲目 sleep 的标准替代） */
+export async function pollUntil<T>(
+  fn: () => Promise<T | null | undefined | false>,
+  opts: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<T> {
+  const deadline = Date.now() + (opts.timeoutMs ?? 5000)
+  for (;;) {
+    const v = await fn()
+    if (v !== null && v !== undefined && v !== false) return v
+    if (Date.now() > deadline) throw new Error('pollUntil 超时')
+    await new Promise((r) => setTimeout(r, opts.intervalMs ?? 50))
+  }
+}
 
 export async function login(ctx: TestCtx, username: string, password: string): Promise<string> {
   const res = await ctx.app.inject({
