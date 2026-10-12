@@ -1,5 +1,6 @@
 import { applyAccountTransition } from '../domain/accounts'
 import { handleJoinTimeout, resumeJob } from '../domain/jobs'
+import { runSequenceStep } from '../domain/sequence'
 import { scheduleTaskIn, type DueTaskHandler } from './due-tasks'
 import type { Db } from '../db'
 import type { GatewayClient } from '../gateway/client'
@@ -26,6 +27,16 @@ export function dueTaskHandlers(gateway?: GatewayClient): Record<string, DueTask
     },
     job_join_timeout: async (db: Db, payload) => {
       await handleJoinTimeout(db, String(payload.jobId), String(payload.accountId))
+    },
+
+    // B1 序列步骤到点
+    sequence_step: async (db: Db, payload) => {
+      await runSequenceStep(db, String(payload.runId), Number(payload.stepIndex))
+    },
+    // B2 leave 500 后的重试
+    leave_retry: async (db: Db, payload) => {
+      if (!gateway) return
+      await resumeJob(db, String(payload.jobId), gateway, 'leave_retry')
     },
 
     // A5.2 60s 墙钟兜底：重启时 deadline 会被心跳差值平移，到点先核对剩余时间与工具执行状态

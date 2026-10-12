@@ -4,6 +4,7 @@ import { applyAccountTransition } from '../domain/accounts'
 import { notifyMemberJoined, notifyMemberLeft } from '../domain/jobs'
 import { mergeReflowIntoOutbound } from '../domain/outbound'
 import { agentTrigger } from '../domain/agent'
+import { completeSequenceStepOnSent } from '../domain/sequence'
 import type { GatewayClient } from '../gateway/client'
 
 // 网关事件 handler 注册表：每个 handler 必须幂等（at-least-once 投递）。
@@ -103,6 +104,14 @@ export function defaultHandlers(gateway?: GatewayClient): Record<string, Gateway
         // 若回流行先占了 (group_id,msg_id)：并入出站行，保证一条消息一行
         await mergeReflowIntoOutbound(q, clientMsgId, msgId)
       })
+      // B1 链式排期锚点：该消息由序列步骤发出 → 以"发出时刻"排下一步
+      const { rows: linked } = await db.query<{ sequence_step_id: string | null }>(
+        'SELECT sequence_step_id FROM messages WHERE client_msg_id=$1',
+        [clientMsgId],
+      )
+      if (linked[0]?.sequence_step_id) {
+        await completeSequenceStepOnSent(db, linked[0].sequence_step_id, new Date(typeof data.sentAt === 'number' ? data.sentAt : Date.now()))
+      }
     },
 
     // M4：deliveryStatus → failed + failCode

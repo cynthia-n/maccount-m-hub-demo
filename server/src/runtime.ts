@@ -6,6 +6,7 @@ import { dueTaskHandlers } from './workers/task-handlers'
 import { pollJobs } from './domain/jobs'
 import { pumpOutbound, resolveUnknown } from './domain/outbound'
 import { pollAgentRuns } from './domain/agent'
+import { rescheduleExpiredSequenceSteps } from './domain/sequence'
 import { AgentClient } from './agent/client'
 import { startWorkers, type WorkerRegistry } from './workers/runner'
 import { createWsNotifier } from './workers/ws-notifier'
@@ -36,6 +37,7 @@ export async function startRuntime(app: FastifyInstance): Promise<Runtime> {
     }
   }
 
+  await rescheduleExpiredSequenceSteps(db)
   const agentClient = new AgentClient(cfg.AGENT_URL)
   const sse = startSseClient({
     db,

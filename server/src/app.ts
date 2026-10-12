@@ -11,6 +11,7 @@ import { authRoutes } from './routes/auth'
 import { groupRoutes } from './routes/groups'
 import { healthRoutes } from './routes/health'
 import { jobRoutes } from './routes/jobs'
+import { sequenceRoutes } from './routes/sequences'
 import './types'
 
 export interface BuildOptions {
@@ -72,6 +73,7 @@ export async function buildApp(cfg: Config, db: Db, opts: BuildOptions = {}): Pr
   groupRoutes(app)
   agentRunRoutes(app)
   jobRoutes(app)
+  sequenceRoutes(app)
   opts.extras?.(app)
 
   await app.ready()

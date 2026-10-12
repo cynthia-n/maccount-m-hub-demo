@@ -61,12 +61,13 @@ function gwCode(e: unknown): string {
 async function loadJob(db: Db, jobId: string) {
   const { rows } = await db.query<{
     id: string
+    type: string
     status: string
     group_id: string
     params: CreateGroupParams
     waiting_for: string | null
     errors: Array<{ step: string; code: string }>
-  }>('SELECT id, status, group_id, params, waiting_for, errors FROM jobs WHERE id = $1', [jobId])
+  }>('SELECT id, type, status, group_id, params, waiting_for, errors FROM jobs WHERE id = $1', [jobId])
   return rows[0] ?? null
 }
 
@@ -130,13 +131,54 @@ async function advanceLoop(db: Db, jobId: string, gateway: GatewayClient, joinTi
     const job = await loadJob(db, jobId)
     if (!job || job.status !== 'running' || job.waiting_for) return
     const steps = await loadSteps(db, jobId)
-    const current = steps.find((s) => s.status !== 'done')
+    const current = steps.find((s) => s.status === 'pending')
     if (!current) {
-      await db.query("UPDATE jobs SET status='finished', updated_at=now() WHERE id=$1 AND status='running'", [jobId])
+      // 全部步骤已终态：create 无失败即 finished；leave_all 有错误则 failed
+      if (job.type === 'leave_all' && (job.errors ?? []).length > 0) {
+        await db.query("UPDATE jobs SET status='failed', updated_at=now() WHERE id=$1 AND status='running'", [jobId])
+      } else {
+        await db.query("UPDATE jobs SET status='finished', updated_at=now() WHERE id=$1 AND status='running'", [jobId])
+        if (job.type === 'leave_all') {
+          await db.query(`UPDATE groups SET status='left' WHERE id=$1`, [job.group_id])
+        }
+      }
       return
     }
     const params = job.params
     const groupId = job.group_id
+
+    // ── B2 leave-all：非群主先退、群主最后；非群主失败记录后继续 ──
+    if (job.type === 'leave_all' && current.step.startsWith('leave:')) {
+      const accountId = current.step.slice(6)
+      const gwGroupId = await currentGroupId(db, groupId)
+      try {
+        await gateway.leave(gwGroupId, accountId)
+        await db.withTx(async (q) => {
+          await q('DELETE FROM group_members WHERE group_id=$1 AND account_id=$2', [groupId, accountId])
+        })
+        await setStepDone(db, jobId, current.step, {})
+        continue
+      } catch (e) {
+        if (isGwUnavailable(e)) throw e // 退避重试
+        const code = gwCode(e)
+        const attempts = Number(current.detail.attempts ?? 0)
+        if (code === 'LEAVE_FAILED' && attempts < 1) {
+          await setStepDetail(db, jobId, current.step, { attempts: attempts + 1 })
+          await setWaiting(db, jobId, 'leave_retry')
+          await db.withTx(async (q) => {
+            await scheduleTaskIn(q, 'job_advance', 1000, { jobId, waiting: 'leave_retry' })
+          })
+          return
+        }
+        // 失败：记 errors，步骤 failed，继续其余账号（群主不退由步骤顺序保证）
+        await db.query('UPDATE job_steps SET status=$3, updated_at=now() WHERE job_id=$1 AND step=$2', [jobId, current.step, 'failed'])
+        await db.query(
+          `UPDATE jobs SET errors = errors || $2::jsonb, updated_at=now() WHERE id=$1`,
+          [jobId, JSON.stringify([{ step: current.step, code: code === 'LEAVE_FAILED' ? 'LEAVE_FAILED' : code }])],
+        )
+        continue
+      }
+    }
 
     try {
       if (current.step === 'create') {
@@ -336,6 +378,31 @@ export async function notifyMemberLeft(db: Db, gatewayGroupId: string, platformU
     'DELETE FROM group_members WHERE group_id=$1 AND platform_user_id=$2',
     [g[0].id, platformUserId],
   )
+}
+
+/** B2 leave-all：所有服务账号退群，群主最后 */
+export async function submitLeaveAll(db: Db, groupId: string): Promise<string> {
+  const { rows: g } = await db.query<{ id: string; status: string }>('SELECT id, status FROM groups WHERE id=$1', [groupId])
+  if (!g[0]) throw new AppError(404, ErrorCode.GROUP_NOT_FOUND, '群不存在')
+  if (g[0].status !== 'active') throw new AppError(409, 'GROUP_NOT_ACTIVE', '群不在 active 状态')
+  const { rows: members } = await db.query<{ account_id: string; role: string }>(
+    'SELECT account_id, role FROM group_members WHERE group_id=$1 ORDER BY account_id',
+    [groupId],
+  )
+  const owner = members.find((m) => m.role === 'creator')
+  const others = members.filter((m) => m.role !== 'creator').map((m) => m.account_id)
+  const order = [...others, ...(owner ? [owner.account_id] : [])]
+  return db.withTx(async (q) => {
+    const job = await q<{ id: string }>(
+      `INSERT INTO jobs (type, group_id, params) VALUES ('leave_all', $1, $2::jsonb) RETURNING id`,
+      [groupId, JSON.stringify({ order })],
+    )
+    const jobId = job.rows[0]!.id
+    for (const acc of order) {
+      await q('INSERT INTO job_steps (job_id, step) VALUES ($1, $2)', [jobId, `leave:${acc}`])
+    }
+    return jobId
+  })
 }
 
 /** due_task：join 超时——member_joined 超过时限未到 → job failed（JOIN_TIMEOUT） */
