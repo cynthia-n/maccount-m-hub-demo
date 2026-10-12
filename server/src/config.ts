@@ -13,6 +13,7 @@ const envSchema = z.object({
 
   // 可调时序（docs/ARCHITECTURE §12）；测试里调小
   ACCESS_TOKEN_TTL_MS: z.coerce.number().default(15 * 60_000),
+  REFRESH_TTL_MS: z.coerce.number().default(7 * 24 * 60 * 60_000),
   TURN_TIMEOUT_MS: z.coerce.number().default(12_000),
   AUDIT_TIMEOUT_MS: z.coerce.number().default(5_000),
   AUDIT_ATTEMPTS: z.coerce.number().default(3),
