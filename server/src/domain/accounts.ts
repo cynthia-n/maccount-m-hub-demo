@@ -22,11 +22,18 @@ export interface TransitionInput {
 }
 
 export async function applyAccountTransition(db: Db, input: TransitionInput): Promise<TransitionResult> {
-  return db.withTx(async (q) => doTransition(q, input))
+  const affectedSequenceRuns: string[] = []
+  const result = await db.withTx(async (q) => doTransition(q, input, affectedSequenceRuns))
+  // 终态跳过的序列步骤需要在事务外续链（依赖序列域的排期逻辑）
+  if (result.ok && isTerminal(result.to) && affectedSequenceRuns.length > 0) {
+    const { chainSequenceAfterTerminalSkip } = await import('./sequence')
+    await chainSequenceAfterTerminalSkip(db, affectedSequenceRuns)
+  }
+  return result
 }
 
 /** 事务内版本：供发送错误处理等已在事务中的调用方复用 */
-export async function doTransition(q: QueryFn, input: TransitionInput): Promise<TransitionResult> {
+export async function doTransition(q: QueryFn, input: TransitionInput, affectedSequenceRuns?: string[]): Promise<TransitionResult> {
   const { accountId, to, source, expectedFrom } = input
   const { rows } = await q<{ status: AccountStatus }>(
     'SELECT status FROM accounts WHERE id = $1 FOR UPDATE',
@@ -57,7 +64,7 @@ export async function doTransition(q: QueryFn, input: TransitionInput): Promise<
   if (r.rowCount !== 1) return { ok: false, reason: 'cas_conflict' }
 
   if (isTerminal(to)) {
-    await applyTerminalSideEffects(q, accountId)
+    await applyTerminalSideEffects(q, accountId, affectedSequenceRuns)
     await emitWs(q, 'account_terminal', { accountId, status: to })
   }
   // 状态事件在状态已保存的同事务里入 outbox（A1：推给前端的状态必须对应已保存状态）
@@ -65,13 +72,21 @@ export async function doTransition(q: QueryFn, input: TransitionInput): Promise<
   return { ok: true, from: current, to }
 }
 
-async function applyTerminalSideEffects(q: QueryFn, accountId: string): Promise<void> {
+async function applyTerminalSideEffects(q: QueryFn, accountId: string, affectedSequenceRuns?: string[]): Promise<void> {
   await q('DELETE FROM group_members WHERE account_id = $1', [accountId])
   await q(
     `UPDATE messages SET delivery_status = 'cancelled', fail_code = 'ACCOUNT_TERMINAL'
      WHERE sender_account_id = $1 AND delivery_status IN ('queued','unknown')`,
     [accountId],
   )
+  // 记下受影响 run，事务提交后续链（A1：对应序列步骤变为 skipped，进度照常推进）
+  if (affectedSequenceRuns) {
+    const { rows } = await q<{ run_id: string }>(
+      `SELECT DISTINCT run_id FROM sequence_steps WHERE account_id=$1 AND status IN ('pending','accepted')`,
+      [accountId],
+    )
+    affectedSequenceRuns.push(...rows.map((r) => r.run_id))
+  }
   await q(
     `UPDATE sequence_steps SET status = 'skipped', sent_at = now()
      WHERE account_id = $1 AND status IN ('pending','accepted')`,
@@ -79,12 +94,3 @@ async function applyTerminalSideEffects(q: QueryFn, accountId: string): Promise<
   )
 }
 
-/** 终态后果的幂等补偿：处理"终态事件到达晚于副作用"或崩溃残留的兜底（如收到 suspended 但成员仍在） */
-export async function reconcileTerminalSideEffects(db: Db, accountId: string): Promise<void> {
-  await db.withTx(async (q) => {
-    const { rows } = await q<{ status: AccountStatus }>('SELECT status FROM accounts WHERE id = $1', [accountId])
-    if (rows[0] && isTerminal(rows[0].status)) {
-      await applyTerminalSideEffects(q, accountId)
-    }
-  })
-}

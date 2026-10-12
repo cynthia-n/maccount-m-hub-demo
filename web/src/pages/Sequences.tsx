@@ -48,7 +48,13 @@ export default function Sequences(): JSX.Element {
   const [groupId, setGroupId] = useState<string>()
   const [varsText, setVarsText] = useState('{}')
   const [stepVarsText, setStepVarsText] = useState('{}')
-  const [precheck, setPrecheck] = useState<null | { ok: boolean; message: string; data?: Array<{ index: number; key: string; value: string; source: string }>; stepIndex?: number }>(null)
+  const [precheck, setPrecheck] = useState<null | {
+    ok: boolean
+    message: string
+    data?: Array<{ index: number; key: string; value: string; source: string }>
+    stepIndex?: number
+    key?: string
+  }>(null)
   const [runningRunId, setRunningRunId] = useState<string | null>(null)
 
   const groups = useQuery({ queryKey: ['groups'], queryFn: () => http.get<GroupRow[]>('/api/groups'), refetchInterval: 5000 })
@@ -109,7 +115,12 @@ export default function Sequences(): JSX.Element {
     },
     onError: (e: Error & { code?: string; extra?: Record<string, unknown> }) => {
       if (e.code === 'UNRESOLVED_PLACEHOLDER') {
-        setPrecheck({ ok: false, message: e.message, stepIndex: Number(e.extra?.stepIndex) })
+        setPrecheck({
+          ok: false,
+          message: e.message,
+          stepIndex: Number(e.extra?.stepIndex),
+          key: String(e.extra?.key ?? ''),
+        })
       } else {
         void message.error(e.message)
       }
@@ -201,7 +212,7 @@ export default function Sequences(): JSX.Element {
                 <div>{precheck.message}</div>
                 {precheck.stepIndex !== undefined && (
                   <div>
-                    stepIndex = {precheck.stepIndex}
+                    stepIndex = {precheck.stepIndex}，key = {precheck.key}
                   </div>
                 )}
               </>

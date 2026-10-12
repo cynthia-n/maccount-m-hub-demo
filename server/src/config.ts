@@ -21,7 +21,6 @@ const envSchema = z.object({
   AGENT_MAX_STEPS: z.coerce.number().default(12),
   AGENT_WALL_CLOCK_MS: z.coerce.number().default(60_000),
   UNKNOWN_SETTLE_MS: z.coerce.number().default(2_000),
-  UNKNOWN_DEADLINE_MS: z.coerce.number().default(5_000),
   UNKNOWN_POLL_MS: z.coerce.number().default(400),
   JOIN_TIMEOUT_MS: z.coerce.number().default(10_000),
   WORKER_TICK_MS: z.coerce.number().default(250),

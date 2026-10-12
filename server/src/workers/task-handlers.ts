@@ -11,8 +11,18 @@ export function dueTaskHandlers(gateway?: GatewayClient): Record<string, DueTask
     // A1：限流到期恢复——到期时账号必须仍是 rate_limited 才转回 online
     rate_limit_expire: async (db: Db, payload) => {
       const accountId = String(payload.accountId)
-      const { rows } = await db.query<{ status: string }>('SELECT status FROM accounts WHERE id = $1', [accountId])
-      if (rows[0]?.status !== 'rate_limited') return
+      const { rows } = await db.query<{ status: string; rate_limited_until: Date | null }>(
+        'SELECT status, rate_limited_until FROM accounts WHERE id = $1',
+        [accountId],
+      )
+      const row = rows[0]
+      if (!row || row.status !== 'rate_limited') return
+      // 二次 429 刷新过 until：旧任务到点时窗口还没过，重排到真正到期
+      const until = row.rate_limited_until ? new Date(row.rate_limited_until).getTime() : 0
+      if (until > Date.now()) {
+        await db.withTx((q) => scheduleTaskIn(q, 'rate_limit_expire', until - Date.now() + 50, { accountId }))
+        return
+      }
       await applyAccountTransition(db, { accountId, to: 'online', source: 'rate_limit_expiry' })
     },
 

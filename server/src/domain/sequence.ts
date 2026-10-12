@@ -199,6 +199,46 @@ async function pickStepAccount(db: Db, groupId: string, role: 'admin' | 'member'
   return rows[0]?.account_id ?? null
 }
 
+/** 出站消息最终 failed：步骤 failed 并照常续链（跳过该步语义） */
+export async function failSequenceStep(db: Db, sequenceStepId: string): Promise<void> {
+  const { rows } = await db.query<{ run_id: string; step_index: number; status: string }>(
+    'SELECT run_id, step_index, status FROM sequence_steps WHERE id=$1',
+    [sequenceStepId],
+  )
+  const step = rows[0]
+  if (!step || (step.status !== 'accepted' && step.status !== 'pending')) return
+  await db.withTx(async (q) => {
+    const r = await q(
+      `UPDATE sequence_steps SET status='failed', sent_at=now() WHERE id=$1 AND status IN ('accepted','pending')`,
+      [sequenceStepId],
+    )
+    if ((r.rowCount ?? 0) === 0) return
+    await scheduleNextStep(q, db, step.run_id, step.step_index)
+  })
+}
+
+/** 账号终态副作用跳过步骤后续链（accounts 域在事务提交后调用） */
+export async function chainSequenceAfterTerminalSkip(db: Db, runIds: string[]): Promise<void> {
+  for (const runId of runIds) {
+    const loaded = await loadRunSteps(db, runId)
+    if (!loaded || loaded.run.status !== 'running') continue
+    const next = loaded.steps.find((s) => s.status === 'pending')
+    if (!next) {
+      if (loaded.steps.every((s) => s.status !== 'pending')) {
+        await db.query(`UPDATE sequence_runs SET status='finished', updated_at=now() WHERE id=$1 AND status='running'`, [runId])
+      }
+      continue
+    }
+    const defStep = loaded.def?.steps.find((s) => s.index === next.step_index)
+    await db.withTx((q) =>
+      scheduleTaskIn(q, 'sequence_step', Math.max(0, (defStep?.delaySeconds ?? 0) * 1000), {
+        runId,
+        stepIndex: next.step_index,
+      }),
+    )
+  }
+}
+
 /** message_sent 到达：步骤 sent → 以"发出时刻 + 下一步 delay"排下一步 */
 export async function completeSequenceStepOnSent(db: Db, sequenceStepId: string, sentAt: Date): Promise<void> {
   const { rows } = await db.query<{ run_id: string; step_index: number; status: string }>(

@@ -4,7 +4,7 @@ import { applyAccountTransition } from '../domain/accounts'
 import { notifyMemberJoined, notifyMemberLeft } from '../domain/jobs'
 import { mergeReflowIntoOutbound } from '../domain/outbound'
 import { agentTrigger } from '../domain/agent'
-import { completeSequenceStepOnSent } from '../domain/sequence'
+import { completeSequenceStepOnSent, failSequenceStep } from '../domain/sequence'
 import type { GatewayClient } from '../gateway/client'
 
 // 网关事件 handler 注册表：每个 handler 必须幂等（at-least-once 投递）。
@@ -114,16 +114,18 @@ export function defaultHandlers(gateway?: GatewayClient): Record<string, Gateway
       }
     },
 
-    // M4：deliveryStatus → failed + failCode
+    // M4：deliveryStatus → failed + failCode；序列步骤随之 failed 并续链（B1）
     message_failed: async (db, data) => {
       const clientMsgId = String(data.clientMsgId ?? '')
       const code = String(data.code ?? 'UNKNOWN')
       if (!clientMsgId) return
-      await db.query(
+      const { rows } = await db.query<{ id: string; sequence_step_id: string | null }>(
         `UPDATE messages SET delivery_status='failed', fail_code=$2
-         WHERE client_msg_id=$1 AND delivery_status IN ('queued','accepted','unknown')`,
+         WHERE client_msg_id=$1 AND delivery_status IN ('queued','accepted','unknown')
+         RETURNING id, sequence_step_id`,
         [clientMsgId, code],
       )
+      if (rows[0]?.sequence_step_id) await failSequenceStep(db, rows[0].sequence_step_id)
     },
     // M3：写成员表 + 唤醒建群 job / 删成员表
     member_joined: async (db, data) => {

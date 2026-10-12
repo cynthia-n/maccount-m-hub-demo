@@ -3,6 +3,7 @@ import type { Db, QueryFn } from '../db'
 import type { GatewayClient } from '../gateway/client'
 import type { GatewayError as GwError } from '../gateway/client'
 import { doTransition } from './accounts'
+import { failSequenceStep } from './sequence'
 import { scheduleTaskIn } from '../workers/due-tasks'
 import { emitWs } from '../ws/outbox'
 
@@ -159,6 +160,7 @@ export async function handleSendError(
         source: 'send_error',
       })
     })
+    await settleSequenceStepOf(db, m.id)
     return
   }
 
@@ -175,6 +177,16 @@ export async function handleSendError(
   await db.withTx(async (q) => {
     await markFailed(q, m.id, code)
   })
+  await settleSequenceStepOf(db, m.id)
+}
+
+/** 消息失败时结算其序列步骤（failed 并续链） */
+async function settleSequenceStepOf(db: Db, messageId: string): Promise<void> {
+  const { rows } = await db.query<{ sequence_step_id: string | null }>(
+    'SELECT sequence_step_id FROM messages WHERE id=$1',
+    [messageId],
+  )
+  if (rows[0]?.sequence_step_id) await failSequenceStep(db, rows[0].sequence_step_id)
 }
 
 export async function markFailed(q: QueryFn, messageId: string, failCode: string): Promise<void> {
@@ -273,6 +285,7 @@ export async function resolveUnknown(db: Db, gateway: GatewayClient, opts: {
       await db.withTx(async (q) => {
         await markFailed(q, m.id, 'NETWORK_TIMEOUT')
       })
+      await settleSequenceStepOf(db, m.id)
     }
   }
   return handled

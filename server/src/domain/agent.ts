@@ -393,16 +393,15 @@ async function maybeFailProtocolErrors(db: Db, runId: string): Promise<boolean> 
 }
 
 async function commitToolResult(db: Db, runId: string, idx: number, result: ToolResult, toolUseId: string): Promise<void> {
-  // 单个 tool_result content ≤ 8KB（A5.9）
+  // 单个 tool_result content ≤ 8KB（A5.9）；截断后必须是合法 JSON（C2 的真实 LLM 要解析它）
   let content = JSON.stringify(result.content)
-  let truncated = false
   if (content.length > 8192) {
-    const parsed = { ...result.content, truncated: true }
-    content = JSON.stringify(parsed)
-    truncated = true
-    if (content.length > 8192) content = content.slice(0, 8192)
+    content = JSON.stringify({
+      truncated: true,
+      partial: JSON.stringify(result.content).slice(0, 7500),
+      hint: 'original tool result exceeded 8KB and was truncated',
+    })
   }
-  void truncated
   await db.withTx(async (q) => {
     await q(
       `UPDATE agent_steps SET result_summary=$3, is_error=$4, error_code=$5, audit_verdict=$6
@@ -640,6 +639,10 @@ async function waitForSendResolution(db: Db, messageId: string, key: string, wai
         return { content: { code: 'GROUP_UNREACHABLE', message: '群不可写' }, isError: true, errorCode: 'GROUP_UNREACHABLE' }
       }
       return { content: { code: 'SEND_FAILED', message: `发送失败: ${rows[0]!.fail_code}` }, isError: true, errorCode: 'SEND_FAILED' }
+    }
+    if (st === 'cancelled') {
+      // 排队中被终态/群不可写取消（A5.5：账号中途变终态 → SEND_FAILED，run 继续）
+      return { content: { code: 'SEND_FAILED', message: `发送被取消: ${rows[0]!.fail_code}` }, isError: true, errorCode: 'SEND_FAILED' }
     }
     if (Date.now() > deadline) {
       // 5 秒仍无法确认 → SEND_TIMEOUT（消息可能仍在管线中；幂等键已注册，重复调用会查到它）
