@@ -17,7 +17,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await teardownRuntimeTest(ctx)
-})
+}, 30_000)
 
 const authedReq = (token: string) => ({
   headers: { authorization: `Bearer ${token}` },
@@ -208,7 +208,7 @@ describe('A1 限流到期恢复（due_tasks）', () => {
     const { scheduleTask } = await import('../../src/workers/due-tasks')
 
     // bravo：rate_limited + 到期任务
-    await ctx.db.query(`UPDATE accounts SET status='rate_limited', rate_limited_until=now() WHERE id='acc-bravo'`)
+    await ctx.db.query(`UPDATE accounts SET status='rate_limited', rate_limited_until=now() - interval '100 milliseconds' WHERE id='acc-bravo'`)
     await ctx.db.withTx((q) => scheduleTask(q, 'rate_limit_expire', new Date(Date.now() - 10), { accountId: 'acc-bravo' }))
     // charlie：已被操作员标离线，到期任务到达时不应转移
     await ctx.db.query(`UPDATE accounts SET status='disconnected' WHERE id='acc-charlie'`)

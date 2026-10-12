@@ -20,3 +20,7 @@ tmp/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 本地文档不入库
+docs/
+AGENTS.md

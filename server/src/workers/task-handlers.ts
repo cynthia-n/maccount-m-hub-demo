@@ -18,8 +18,9 @@ export function dueTaskHandlers(gateway?: GatewayClient): Record<string, DueTask
       const row = rows[0]
       if (!row || row.status !== 'rate_limited') return
       // 二次 429 刷新过 until：旧任务到点时窗口还没过，重排到真正到期
+      // （留 200ms 余量：恰好到期/时钟微抖时按到期处理，避免判定摇摆）
       const until = row.rate_limited_until ? new Date(row.rate_limited_until).getTime() : 0
-      if (until > Date.now()) {
+      if (until > Date.now() + 200) {
         await db.withTx((q) => scheduleTaskIn(q, 'rate_limit_expire', until - Date.now() + 50, { accountId }))
         return
       }

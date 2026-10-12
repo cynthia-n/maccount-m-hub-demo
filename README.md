@@ -4,7 +4,7 @@
 
 - 后端：Node 20 + TypeScript + Fastify + PostgreSQL（无 ORM，手写 SQL）
 - 前端：React 18 + Vite + antd 5 + React Query
-- 外部服务（消息网关 / Agent 服务）由仓库内两个**可注入故障的模拟器**提供，接口契约见 `docs/API.md`
+- 外部服务（消息网关 / Agent 服务）由仓库内两个**可注入故障的模拟器**提供
 
 ## 快速开始
 
@@ -52,7 +52,6 @@ npm run smoke  # 起真实进程：登录→connect→建群→发消息→断�
 | B2 邀请链接 | `{"op":"setInvite","mode":"notReady"\|"expire"}` |
 | S6 Agent 坏响应 | `{"op":"scriptAll","steps":[...]}`，POST `:8082/__ctl`；audit：`{"op":"setAudit","mode":"500"}` |
 
-完整开关表与 S1–S8 映射见 `docs/API.md §4`。
 
 ## 架构速览
 
@@ -72,7 +71,7 @@ web (React)  ──REST + WS──  server (Fastify)
 - **定时逻辑持久化**：一切"过 N 秒做 X"都是 `due_tasks` 表 + 轮询 worker（SKIP LOCKED），重启即恢复
 - **Agent 三锚点恢复**：步+历史落库（P1）→ 审计通过的意图落库（P2）→ 结果落库（P3）；重启从锚点续，已产生外部效果的调用不重放
 
-细节：`docs/ARCHITECTURE.md`（表结构 DDL、状态机、循环设计）；需求追溯与决策记录：`docs/PLAN.md`、`docs/DECISIONS.md`。
+核心设计说明：事件入口幂等（inbox）与出口一致（outbox）两个模式的细节，见下方目录结构中对应源码文件的注释与测试用例。
 
 ## 目录
 
@@ -81,6 +80,5 @@ server/   后端（routes/ domain/ workers/ gateway/ ws/ migrations/）
 web/      前端五页：登录 / 账号 / 群列表·详情 / Agent 运行详情 / 序列
 mocks/    gateway-mock、agent-mock（dev 由 npm run dev 拉起，测试进程内启动）
 shared/   前后端共用纯 TS：API 类型、错误码、状态转移表、序列变量解析
-docs/     架构 / 契约 / 计划 / 决策
 scripts/  dev、smoke、compose 初始化
 ```
