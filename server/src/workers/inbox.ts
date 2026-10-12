@@ -2,6 +2,7 @@ import type { Db } from '../db'
 import { emitWs } from '../ws/outbox'
 import { applyAccountTransition } from '../domain/accounts'
 import { notifyMemberJoined, notifyMemberLeft } from '../domain/jobs'
+import { mergeReflowIntoOutbound } from '../domain/outbound'
 import type { GatewayClient } from '../gateway/client'
 
 // 网关事件 handler 注册表：每个 handler 必须幂等（at-least-once 投递）。
@@ -20,40 +21,89 @@ function iso(v: unknown): Date | null {
 
 export function defaultHandlers(gateway?: GatewayClient): Record<string, GatewayEventHandler> {
   return {
-    // 入站消息：按 (group_id, msg_id) 去重；自己的账号回流标 isOwn（A2）
+    // 入站消息：按 (group_id, msg_id) 去重；自己的账号回流标 isOwn（A2/S3）
     message: async (db, data) => {
       const gatewayGroupId = String(data.groupId ?? '')
       const msgId = data.msgId == null ? null : String(data.msgId)
       if (!gatewayGroupId || !msgId) return
-      const { rows: groupRows } = await db.query<{ id: string }>(
-        'SELECT id FROM groups WHERE gateway_group_id = $1',
-        [gatewayGroupId],
-      )
-      const group = groupRows[0]
-      if (!group) return // 非我们管理的群（或建群尚未落库），忽略
-
       const senderPu = data.senderPlatformUserId == null ? null : String(data.senderPlatformUserId)
-      const { rows: accRows } = await db.query<{ id: string }>(
-        'SELECT id FROM accounts WHERE platform_user_id = $1',
-        [senderPu],
-      )
-      const ownAccount = accRows[0] ?? null
       const sentAt = iso(data.sentAt) ?? new Date()
       const text = String(data.text ?? '')
 
-      // 回流合并：自己的出站消息已在表里（按 client_msg_id），这里不匹配时才插入新行；
-      // 出站行回填由 message_sent 处理器负责（M4），此处仅防重复插入
-      await db.query(
-        `INSERT INTO messages (group_id, msg_id, direction, sender_platform_user_id, sender_account_id, is_own, text, sent_at)
-         VALUES ($1, $2, 'inbound', $3, $4, $5, $6, $7)
-         ON CONFLICT (group_id, msg_id) WHERE msg_id IS NOT NULL DO NOTHING`,
-        [group.id, msgId, senderPu, ownAccount?.id ?? null, ownAccount != null, text, sentAt],
-      )
+      await db.withTx(async (q) => {
+        const { rows: groupRows } = await q<{ id: string }>(
+          'SELECT id FROM groups WHERE gateway_group_id = $1',
+          [gatewayGroupId],
+        )
+        const group = groupRows[0]
+        if (!group) return // 非我们管理的群，忽略
+
+        const { rows: accRows } = await q<{ id: string }>(
+          'SELECT id FROM accounts WHERE platform_user_id = $1',
+          [senderPu],
+        )
+        const ownAccount = accRows[0] ?? null
+        const isOwn = ownAccount != null
+
+        // 自己的消息：出站行已存在（queued 起就在时间线里），message_sent 负责回填 msg_id；
+        // 若本事件先到，插入回流行会在 message_sent 时被 mergeReflowIntoOutbound 合并
+        const r = await q(
+          `INSERT INTO messages (group_id, msg_id, direction, sender_platform_user_id, sender_account_id, is_own, text, sent_at)
+           VALUES ($1, $2, 'inbound', $3, $4, $5, $6, $7)
+           ON CONFLICT (group_id, msg_id) WHERE msg_id IS NOT NULL DO NOTHING`,
+          [group.id, msgId, senderPu, ownAccount?.id ?? null, isOwn, text, sentAt],
+        )
+        // 出站行已占用该 msg_id（回流合并场景）：把回流行并进去，时间线保持一行
+        if ((r.rowCount ?? 0) === 0) {
+          const { rows: existing } = await q<{ client_msg_id: string | null; is_own: boolean }>(
+            'SELECT client_msg_id, is_own FROM messages WHERE group_id=$1 AND msg_id=$2',
+            [group.id, msgId],
+          )
+          if (existing[0]?.client_msg_id) {
+            await mergeReflowIntoOutbound(q, existing[0].client_msg_id, msgId)
+            return
+          }
+          // 重复事件（S2）：直接忽略
+          return
+        }
+        await emitWs(q, 'message', { groupId: group.id, msgId, isOwn })
+      })
     },
 
-    // 以下在后续里程碑接入：
-    message_sent: async () => {}, // M4：回填出站行 msgId/sentAt，deliveryStatus → sent
-    message_failed: async () => {}, // M4：deliveryStatus → failed + failCode
+    // M4：回填出站行 msgId/sentAt，deliveryStatus → sent
+    message_sent: async (db, data) => {
+      const clientMsgId = String(data.clientMsgId ?? '')
+      const msgId = data.msgId == null ? null : String(data.msgId)
+      if (!clientMsgId || !msgId) return
+      const sentAtMs = typeof data.sentAt === 'number' ? data.sentAt : Date.parse(String(data.sentAt))
+      await db.withTx(async (q) => {
+        const r = await q(
+          `UPDATE messages SET delivery_status='sent', msg_id=$2, sent_at=to_timestamp($3/1000.0), unknown_since=NULL
+           WHERE client_msg_id=$1 AND delivery_status IN ('queued','accepted','unknown') AND msg_id IS NULL`,
+          [clientMsgId, msgId, Number.isNaN(sentAtMs) ? Date.now() : sentAtMs],
+        )
+        if ((r.rowCount ?? 0) === 0) {
+          // 出站行可能已有 msg_id（消息事件先到并占位）——确认已 sent 即可
+          await q(`UPDATE messages SET delivery_status='sent', unknown_since=NULL
+                   WHERE client_msg_id=$1 AND delivery_status IN ('queued','accepted','unknown')`, [clientMsgId])
+          return
+        }
+        // 若回流行先占了 (group_id,msg_id)：并入出站行，保证一条消息一行
+        await mergeReflowIntoOutbound(q, clientMsgId, msgId)
+      })
+    },
+
+    // M4：deliveryStatus → failed + failCode
+    message_failed: async (db, data) => {
+      const clientMsgId = String(data.clientMsgId ?? '')
+      const code = String(data.code ?? 'UNKNOWN')
+      if (!clientMsgId) return
+      await db.query(
+        `UPDATE messages SET delivery_status='failed', fail_code=$2
+         WHERE client_msg_id=$1 AND delivery_status IN ('queued','accepted','unknown')`,
+        [clientMsgId, code],
+      )
+    },
     // M3：写成员表 + 唤醒建群 job / 删成员表
     member_joined: async (db, data) => {
       if (!gateway) return

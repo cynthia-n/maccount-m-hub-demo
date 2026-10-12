@@ -9,6 +9,7 @@ export interface MockKnobs {
   joinLatencyMs: [number, number]
   kickLatencyMs: [number, number]
   send504Left: number
+  send504LostLeft: number
   leave500Left: number
   kick504Left: number
   inviteMode: 'normal' | 'notReady' | 'expire'
@@ -75,6 +76,7 @@ export function createState(seedAccounts: string[]): MockState {
       joinLatencyMs: [80, 300],
       kickLatencyMs: [50, 120],
       send504Left: 0,
+      send504LostLeft: 0,
       leave500Left: 0,
       kick504Left: 0,
       inviteMode: 'normal',
@@ -180,11 +182,14 @@ export function planSend(state: MockState, groupId: string, accountId: string, c
   if (group.writeForbidden) return { respond: err(403, 'GROUP_WRITE_FORBIDDEN'), schedule: () => {} }
   if (!group.members.has(acc.platformUserId)) return { respond: err(403, 'SENDER_NOT_IN_GROUP'), schedule: () => {} }
 
-  const use504 = state.knobs.send504Left > 0
-  if (use504) state.knobs.send504Left -= 1
+  const use504Lost = state.knobs.send504LostLeft > 0
+  if (use504Lost) state.knobs.send504LostLeft -= 1
+  const use504 = use504Lost || state.knobs.send504Left > 0
+  if (!use504Lost && use504) state.knobs.send504Left -= 1
   const asyncFailCode = state.asyncFailQueue.shift() ?? null
 
   const land = () => {
+    if (use504Lost) return // 纯丢失：504 且消息没有落地
     const sentAt = Date.now()
     const msgId = `msg-${state.nextMsgId++}`
     state.sentLog.push({ clientMsgId, msgId, sentAt, groupId, accountId })
@@ -280,6 +285,9 @@ export function ctl(state: MockState, op: string, params: Record<string, unknown
       return { ok: true }
     case 'setSend504':
       state.knobs.send504Left = num(params.count, 1)
+      return { ok: true }
+    case 'setSend504Lost':
+      state.knobs.send504LostLeft = num(params.count, 1)
       return { ok: true }
     case 'setKick504':
       state.knobs.kick504Left = num(params.count, 1)

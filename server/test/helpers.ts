@@ -32,6 +32,8 @@ export async function setupTest(): Promise<TestCtx> {
     DATABASE_URL: process.env.DATABASE_TEST_URL ?? 'postgres://maccount:maccount@127.0.0.1:54329/maccount_test',
     ACCESS_TOKEN_TTL_MS: '60000',
     JOIN_TIMEOUT_MS: '2000',
+    UNKNOWN_SETTLE_MS: '600',
+    UNKNOWN_POLL_MS: '150',
   })
   const db = createDb(cfg.DATABASE_URL)
   await freshDatabase(db)

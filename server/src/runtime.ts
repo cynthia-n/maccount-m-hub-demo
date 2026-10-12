@@ -4,6 +4,7 @@ import { defaultHandlers, processPendingInbox } from './workers/inbox'
 import { runDueTasks } from './workers/due-tasks'
 import { dueTaskHandlers } from './workers/task-handlers'
 import { pollJobs } from './domain/jobs'
+import { pumpOutbound, resolveUnknown } from './domain/outbound'
 import { startWorkers, type WorkerRegistry } from './workers/runner'
 import { createWsNotifier } from './workers/ws-notifier'
 import { attachWsServer, type WsHub } from './ws/server'
@@ -29,6 +30,16 @@ export function startRuntime(app: FastifyInstance): Runtime {
     { name: 'inbox', run: () => processPendingInbox(db, defaultHandlers(app.gateway)) },
     { name: 'due-tasks', run: () => runDueTasks(db, dueTaskHandlers(app.gateway)) },
     { name: 'jobs', run: () => pollJobs(db, app.gateway, app.cfg.JOIN_TIMEOUT_MS) },
+    {
+      name: 'outbound',
+      run: async () => {
+        await pumpOutbound(db, app.gateway)
+        await resolveUnknown(db, app.gateway, {
+          settleMs: cfg.UNKNOWN_SETTLE_MS,
+          pollMs: cfg.UNKNOWN_POLL_MS,
+        })
+      },
+    },
     { name: 'ws-notifier', run: wsNotifier },
   ])
 
