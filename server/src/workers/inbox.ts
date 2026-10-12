@@ -1,5 +1,6 @@
 import type { Db } from '../db'
 import { emitWs } from '../ws/outbox'
+import { applyAccountTransition } from '../domain/accounts'
 
 // 网关事件 handler 注册表：每个 handler 必须幂等（at-least-once 投递）。
 export type GatewayEventHandler = (db: Db, data: Record<string, unknown>) => Promise<void>
@@ -53,7 +54,13 @@ export function defaultHandlers(): Record<string, GatewayEventHandler> {
     message_failed: async () => {}, // M4：deliveryStatus → failed + failCode
     member_joined: async () => {}, // M3：写成员表、唤醒建群 job
     member_left: async () => {}, // M3/M6：删成员表
-    account_status: async () => {}, // M2：终态转移 + 全套副作用
+    // A1：网关推账号终态 → 与操作员/发送错误同一条转移路径（副作用一致、终态幂等）
+    account_status: async (db, data) => {
+      const accountId = String(data.accountId ?? '')
+      const status = String(data.status ?? '')
+      if (status !== 'suspended' && status !== 'session_expired') return
+      await applyAccountTransition(db, { accountId, to: status, source: 'gateway_event' })
+    },
   }
 }
 

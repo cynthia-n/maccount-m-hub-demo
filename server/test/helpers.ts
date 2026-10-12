@@ -4,10 +4,18 @@ import { createDb, type Db } from '../src/db'
 import { freshDatabase, EXPECTED_SCHEMA_VERSION } from '../src/migrate'
 import { ensureSeed } from '../src/seed'
 import { buildApp } from '../src/app'
+import { startRuntime, type Runtime } from '../src/runtime'
 import { buildGatewayMock } from '../../mocks/gateway/src/app'
 import type { MockState } from '../../mocks/gateway/src/state'
 
 export const SCHEMA_VERSION = EXPECTED_SCHEMA_VERSION
+
+export async function listenUrl(app: FastifyInstance): Promise<string> {
+  await app.listen({ port: 0, host: '127.0.0.1' })
+  const addr = app.server.address()
+  const port = typeof addr === 'object' && addr ? addr.port : 0
+  return `http://127.0.0.1:${port}`
+}
 
 // 集成测试基座：测试库全新迁移 + 进程内 app（fastify.inject 调用，不占端口）
 export interface TestCtx {
@@ -97,4 +105,28 @@ export function authed(ctx: TestCtx, token: string) {
     patch: (url: string, payload?: object) =>
       ctx.app.inject({ method: 'PATCH', url, payload: payload as Record<string, never>, headers }),
   }
+}
+
+// 完整运行时测试基座：app + 网关 mock + SSE/inbox/due-tasks/ws-notifier 全部在进程内跑
+export interface RuntimeCtx extends TestCtx {
+  mock: MockCtx
+  runtime: Runtime
+}
+
+export async function setupRuntimeTest(opts: { seedAccounts?: string[] } = {}): Promise<RuntimeCtx> {
+  const mock = await startGatewayMock(opts.seedAccounts)
+  const ctx = await setupTest()
+  ctx.cfg.GATEWAY_URL = mock.url
+  // rebuild app with correct gateway url（buildApp 已装饰，换 app）
+  await ctx.app.close()
+  const app = await buildApp(ctx.cfg, ctx.db)
+  ctx.app = app
+  const runtime = startRuntime(app)
+  return { ...ctx, mock, runtime }
+}
+
+export async function teardownRuntimeTest(ctx: RuntimeCtx): Promise<void> {
+  await ctx.runtime.stop()
+  await ctx.mock.close()
+  await teardownTest(ctx)
 }

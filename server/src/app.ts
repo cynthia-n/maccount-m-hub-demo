@@ -4,6 +4,8 @@ import { ZodError } from 'zod'
 import { AppError, ErrorCode, toErrorBody } from '@mhub/shared'
 import type { Config } from './config'
 import type { Db } from './db'
+import { GatewayClient } from './gateway/client'
+import { accountRoutes } from './routes/accounts'
 import { authRoutes } from './routes/auth'
 import { healthRoutes } from './routes/health'
 import './types'
@@ -21,6 +23,7 @@ export async function buildApp(cfg: Config, db: Db, opts: BuildOptions = {}): Pr
   })
   app.decorate('cfg', cfg)
   app.decorate('db', db)
+  app.decorate('gateway', new GatewayClient(cfg.GATEWAY_URL))
 
   // 统一错误出口：一切错误都是 { error: { code, message, requestId, ... } }
   app.setErrorHandler((err, req, reply) => {
@@ -62,6 +65,7 @@ export async function buildApp(cfg: Config, db: Db, opts: BuildOptions = {}): Pr
 
   healthRoutes(app)
   authRoutes(app)
+  accountRoutes(app)
   opts.extras?.(app)
 
   await app.ready()
