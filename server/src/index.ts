@@ -16,7 +16,7 @@ async function main() {
   const app = await buildApp(cfg, db, { logger: true })
   await app.listen({ port: cfg.PORT, host: '0.0.0.0' })
 
-  const runtime = startRuntime(app)
+  const runtime = await startRuntime(app)
 
   const shutdown = async () => {
     await runtime.stop()

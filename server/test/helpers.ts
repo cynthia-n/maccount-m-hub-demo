@@ -7,6 +7,8 @@ import { buildApp } from '../src/app'
 import { startRuntime, type Runtime } from '../src/runtime'
 import { buildGatewayMock } from '../../mocks/gateway/src/app'
 import type { MockState } from '../../mocks/gateway/src/state'
+import { buildAgentMock } from '../../mocks/agent/src/app'
+import type { AgentMockState } from '../../mocks/agent/src/state'
 
 export const SCHEMA_VERSION = EXPECTED_SCHEMA_VERSION
 
@@ -30,7 +32,7 @@ export async function setupTest(): Promise<TestCtx> {
   const cfg = loadConfig({
     ...process.env,
     DATABASE_URL: process.env.DATABASE_TEST_URL ?? 'postgres://maccount:maccount@127.0.0.1:54329/maccount_test',
-    ACCESS_TOKEN_TTL_MS: '60000',
+    ACCESS_TOKEN_TTL_MS: '900000',
     JOIN_TIMEOUT_MS: '2000',
     UNKNOWN_SETTLE_MS: '600',
     UNKNOWN_POLL_MS: '150',
@@ -111,26 +113,53 @@ export function authed(ctx: TestCtx, token: string) {
   }
 }
 
-// 完整运行时测试基座：app + 网关 mock + SSE/inbox/due-tasks/ws-notifier 全部在进程内跑
+// 完整运行时测试基座：app + 网关/agent mock + 全部 worker 在进程内跑
 export interface RuntimeCtx extends TestCtx {
   mock: MockCtx
+  agentMock: AgentMockCtx
   runtime: Runtime
+}
+
+export interface AgentMockCtx {
+  url: string
+  ctl: (op: string, params?: Record<string, unknown>) => Promise<unknown>
+  state: AgentMockState
+  close: () => Promise<void>
+}
+
+export async function startAgentMock(): Promise<AgentMockCtx> {
+  const { app, state } = buildAgentMock()
+  await app.listen({ port: 0, host: '127.0.0.1' })
+  const addr = app.server.address()
+  const port = typeof addr === 'object' && addr ? addr.port : 0
+  return {
+    url: `http://127.0.0.1:${port}`,
+    state,
+    ctl: async (op, params = {}) => {
+      const res = await app.inject({ method: 'POST', url: '/__ctl', payload: { op, ...params } })
+      return res.json()
+    },
+    close: () => app.close(),
+  }
 }
 
 export async function setupRuntimeTest(opts: { seedAccounts?: string[] } = {}): Promise<RuntimeCtx> {
   const mock = await startGatewayMock(opts.seedAccounts)
+  const agentMock = await startAgentMock()
   const ctx = await setupTest()
   ctx.cfg.GATEWAY_URL = mock.url
-  // rebuild app with correct gateway url（buildApp 已装饰，换 app）
+  ctx.cfg.AGENT_URL = agentMock.url
+  // rebuild app with correct urls（buildApp 已装饰，换 app）
   await ctx.app.close()
   const app = await buildApp(ctx.cfg, ctx.db)
   ctx.app = app
-  const runtime = startRuntime(app)
-  return { ...ctx, mock, runtime }
+  const runtime = await startRuntime(app)
+  return { ...ctx, mock, agentMock, runtime }
 }
 
 export async function teardownRuntimeTest(ctx: RuntimeCtx): Promise<void> {
   await ctx.runtime.stop()
   await ctx.mock.close()
+  await ctx.agentMock.close()
   await teardownTest(ctx)
 }

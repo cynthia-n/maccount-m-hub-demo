@@ -3,6 +3,7 @@ import { emitWs } from '../ws/outbox'
 import { applyAccountTransition } from '../domain/accounts'
 import { notifyMemberJoined, notifyMemberLeft } from '../domain/jobs'
 import { mergeReflowIntoOutbound } from '../domain/outbound'
+import { agentTrigger } from '../domain/agent'
 import type { GatewayClient } from '../gateway/client'
 
 // 网关事件 handler 注册表：每个 handler 必须幂等（at-least-once 投递）。
@@ -30,6 +31,9 @@ export function defaultHandlers(gateway?: GatewayClient): Record<string, Gateway
       const sentAt = iso(data.sentAt) ?? new Date()
       const text = String(data.text ?? '')
 
+      let insertedId: string | null = null
+      let triggerGroupId: string | null = null
+      let triggerIsOwn = false
       await db.withTx(async (q) => {
         const { rows: groupRows } = await q<{ id: string }>(
           'SELECT id FROM groups WHERE gateway_group_id = $1',
@@ -47,27 +51,35 @@ export function defaultHandlers(gateway?: GatewayClient): Record<string, Gateway
 
         // 自己的消息：出站行已存在（queued 起就在时间线里），message_sent 负责回填 msg_id；
         // 若本事件先到，插入回流行会在 message_sent 时被 mergeReflowIntoOutbound 合并
-        const r = await q(
+        const r = await q<{ id: string }>(
           `INSERT INTO messages (group_id, msg_id, direction, sender_platform_user_id, sender_account_id, is_own, text, sent_at)
            VALUES ($1, $2, 'inbound', $3, $4, $5, $6, $7)
-           ON CONFLICT (group_id, msg_id) WHERE msg_id IS NOT NULL DO NOTHING`,
+           ON CONFLICT (group_id, msg_id) WHERE msg_id IS NOT NULL DO NOTHING
+           RETURNING id`,
           [group.id, msgId, senderPu, ownAccount?.id ?? null, isOwn, text, sentAt],
         )
         // 出站行已占用该 msg_id（回流合并场景）：把回流行并进去，时间线保持一行
         if ((r.rowCount ?? 0) === 0) {
-          const { rows: existing } = await q<{ client_msg_id: string | null; is_own: boolean }>(
-            'SELECT client_msg_id, is_own FROM messages WHERE group_id=$1 AND msg_id=$2',
+          const { rows: existing } = await q<{ client_msg_id: string | null }>(
+            'SELECT client_msg_id FROM messages WHERE group_id=$1 AND msg_id=$2',
             [group.id, msgId],
           )
           if (existing[0]?.client_msg_id) {
             await mergeReflowIntoOutbound(q, existing[0].client_msg_id, msgId)
             return
           }
-          // 重复事件（S2）：直接忽略
+          // 重复事件（S2）：直接忽略，不重复触发
           return
         }
         await emitWs(q, 'message', { groupId: group.id, msgId, isOwn })
+        // A5.1 触发放到事务提交后（agentTrigger 用独立连接读消息行）
+        insertedId = r.rows[0]!.id
+        triggerGroupId = group.id
+        triggerIsOwn = isOwn
       })
+      if (insertedId && triggerGroupId && !triggerIsOwn) {
+        await agentTrigger(db, triggerGroupId, insertedId)
+      }
     },
 
     // M4：回填出站行 msgId/sentAt，deliveryStatus → sent
