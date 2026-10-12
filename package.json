@@ -1,0 +1,27 @@
+{
+  "name": "mhub",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "server",
+    "web",
+    "mocks/gateway",
+    "mocks/agent"
+  ],
+  "scripts": {
+    "build": "npm run build -w server && npm run build -w mocks/gateway && npm run build -w mocks/agent && npm run build -w web",
+    "typecheck": "npm run build",
+    "migrate": "npm run migrate -w server",
+    "migrate:fresh": "npm run migrate:fresh -w server",
+    "test": "vitest run",
+    "smoke": "node scripts/smoke.mjs",
+    "dev": "node scripts/dev.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

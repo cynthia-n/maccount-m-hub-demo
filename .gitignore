@@ -1,0 +1,22 @@
+node_modules/
+dist/
+build/
+coverage/
+*.log
+logs/
+npm-debug.log*
+
+# 环境变量与密钥：只提交 example
+.env
+.env.*
+!.env.example
+
+# 运行时产物
+media/
+tmp/
+*.tsbuildinfo
+.vitest/
+
+# 系统文件
+.DS_Store
+Thumbs.db

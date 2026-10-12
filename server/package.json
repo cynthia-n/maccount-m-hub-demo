@@ -1,0 +1,23 @@
+{
+  "name": "@mhub/server",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "migrate": "tsx src/migrate-cli.ts up",
+    "migrate:fresh": "tsx src/migrate-cli.ts fresh"
+  },
+  "dependencies": {
+    "@mhub/shared": "*",
+    "fastify": "^4.28.0",
+    "pg": "^8.13.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "@types/ws": "^8.5.0"
+  }
+}
