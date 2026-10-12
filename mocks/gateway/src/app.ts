@@ -79,6 +79,7 @@ export function buildGatewayMock(opts: GatewayMockOptions = {}): GatewayMock {
     const readyAfterMs = mode === 'notReady' ? state.knobs.notReadyMs : 0
     const expiresAt = mode === 'expire' ? Date.now() + 300 : null
     const inviteLink = `inv-${groupId}-${state.inviteSeq++}`
+    state.counters.invite += 1
     state.invites.set(inviteLink, { groupId, readyAt: Date.now() + readyAfterMs, expiresAt })
     return { inviteLink, readyAfterMs }
   })
@@ -94,6 +95,7 @@ export function buildGatewayMock(opts: GatewayMockOptions = {}): GatewayMock {
     if (!invite || invite.groupId !== groupId) return respond(reply, err(400, 'INVITE_INVALID'))
     if (Date.now() < invite.readyAt) return respond(reply, err(409, 'INVITE_NOT_READY'))
     if (invite.expiresAt && Date.now() > invite.expiresAt) return respond(reply, err(410, 'INVITE_EXPIRED'))
+    state.counters.join += 1
     const acc = state.accounts.get(accountId)!
     const group = state.groups.get(groupId)!
     if (group.members.has(acc.platformUserId)) return respond(reply, err(409, 'ALREADY_MEMBER'))
@@ -121,6 +123,7 @@ export function buildGatewayMock(opts: GatewayMockOptions = {}): GatewayMock {
     if (!group) return respond(reply, err(404, 'GROUP_NOT_FOUND'))
     const by = state.accounts.get(byAccountId)!
     if (group.owner !== by.platformUserId) return respond(reply, err(403, 'NO_PERMISSION'))
+    state.counters.promote += 1
     const target = state.accounts.get(accountId)
     if (!target || !group.members.has(target.platformUserId)) return respond(reply, err(409, 'NOT_MEMBER_YET'))
     group.admins.add(target.platformUserId)
@@ -134,6 +137,7 @@ export function buildGatewayMock(opts: GatewayMockOptions = {}): GatewayMock {
     const { byAccountId, targetPlatformUserId } = req.body as { byAccountId: string; targetPlatformUserId: string }
     const guard = kickTarget(state, groupId, byAccountId, targetPlatformUserId)
     if (guard) return respond(reply, guard)
+    state.counters.kick += 1
 
     const [min, max] = state.knobs.kickLatencyMs
     const delay = min + Math.floor(Math.random() * (max - min + 1))
@@ -165,6 +169,7 @@ export function buildGatewayMock(opts: GatewayMockOptions = {}): GatewayMock {
       state.knobs.leave500Left -= 1
       return reply.status(500).send({ error: { code: 'LEAVE_FAILED', message: 'internal error' } })
     }
+    state.counters.leave += 1
     const acc = state.accounts.get(accountId)!
     removeMember(state, groupId, acc.platformUserId)
     return {}
@@ -188,6 +193,7 @@ export function buildGatewayMock(opts: GatewayMockOptions = {}): GatewayMock {
     if (!group) return respond(reply, err(404, 'GROUP_NOT_FOUND'))
     if (!clientMsgId) return respond(reply, err(400, 'CLIENT_MSG_ID_REQUIRED'))
 
+    state.counters.send += 1
     const outcome = planSend(state, groupId, accountId, clientMsgId, text)
     if (outcome.respond.status === 202 || outcome.respond.status === 504) {
       // 504 也可能已接收：照常落地（网关“2 秒内收敛”语义）
@@ -250,6 +256,7 @@ export function buildGatewayMock(opts: GatewayMockOptions = {}): GatewayMock {
     eventCount: state.events.length,
     maxEventId: state.nextEventId - 1,
     accounts: [...state.accounts.values()].map((a) => ({ accountId: a.accountId, online: a.online, terminal: a.terminal })),
+    counters: state.counters,
   }))
 
   return { app, state }

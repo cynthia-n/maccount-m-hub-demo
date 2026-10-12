@@ -7,7 +7,9 @@ import type { Db } from './db'
 import { GatewayClient } from './gateway/client'
 import { accountRoutes } from './routes/accounts'
 import { authRoutes } from './routes/auth'
+import { groupRoutes } from './routes/groups'
 import { healthRoutes } from './routes/health'
+import { jobRoutes } from './routes/jobs'
 import './types'
 
 export interface BuildOptions {
@@ -66,6 +68,8 @@ export async function buildApp(cfg: Config, db: Db, opts: BuildOptions = {}): Pr
   healthRoutes(app)
   authRoutes(app)
   accountRoutes(app)
+  groupRoutes(app)
+  jobRoutes(app)
   opts.extras?.(app)
 
   await app.ready()

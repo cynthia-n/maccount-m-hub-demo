@@ -57,6 +57,7 @@ export interface MockState {
   silentJoin: Set<string>
   asyncFailQueue: string[] // send 202 后以 message_failed 收场的 code 队列
   subscribers: Set<(ev: MockEvent) => void>
+  counters: { invite: number; join: number; promote: number; kick: number; leave: number; send: number }
   nextEventId: number
   nextMsgId: number
   nextGroupId: number
@@ -90,6 +91,7 @@ export function createState(seedAccounts: string[]): MockState {
     silentJoin: new Set(),
     asyncFailQueue: [],
     subscribers: new Set(),
+    counters: { invite: 0, join: 0, promote: 0, kick: 0, leave: 0, send: 0 },
     nextEventId: 1,
     nextMsgId: 1,
     nextGroupId: 1,

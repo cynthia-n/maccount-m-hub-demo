@@ -3,6 +3,7 @@ import { startSseClient } from './gateway/sse-client'
 import { defaultHandlers, processPendingInbox } from './workers/inbox'
 import { runDueTasks } from './workers/due-tasks'
 import { dueTaskHandlers } from './workers/task-handlers'
+import { pollJobs } from './domain/jobs'
 import { startWorkers, type WorkerRegistry } from './workers/runner'
 import { createWsNotifier } from './workers/ws-notifier'
 import { attachWsServer, type WsHub } from './ws/server'
@@ -25,8 +26,9 @@ export function startRuntime(app: FastifyInstance): Runtime {
     log: (msg) => app.log.info({ msg: `[sse] ${msg}` }),
   })
   const workers: WorkerRegistry = startWorkers(cfg.WORKER_TICK_MS, [
-    { name: 'inbox', run: () => processPendingInbox(db, defaultHandlers()) },
-    { name: 'due-tasks', run: () => runDueTasks(db, dueTaskHandlers()) },
+    { name: 'inbox', run: () => processPendingInbox(db, defaultHandlers(app.gateway)) },
+    { name: 'due-tasks', run: () => runDueTasks(db, dueTaskHandlers(app.gateway)) },
+    { name: 'jobs', run: () => pollJobs(db, app.gateway, app.cfg.JOIN_TIMEOUT_MS) },
     { name: 'ws-notifier', run: wsNotifier },
   ])
 

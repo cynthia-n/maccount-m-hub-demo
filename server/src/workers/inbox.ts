@@ -1,6 +1,8 @@
 import type { Db } from '../db'
 import { emitWs } from '../ws/outbox'
 import { applyAccountTransition } from '../domain/accounts'
+import { notifyMemberJoined, notifyMemberLeft } from '../domain/jobs'
+import type { GatewayClient } from '../gateway/client'
 
 // 网关事件 handler 注册表：每个 handler 必须幂等（at-least-once 投递）。
 export type GatewayEventHandler = (db: Db, data: Record<string, unknown>) => Promise<void>
@@ -16,7 +18,7 @@ function iso(v: unknown): Date | null {
   return null
 }
 
-export function defaultHandlers(): Record<string, GatewayEventHandler> {
+export function defaultHandlers(gateway?: GatewayClient): Record<string, GatewayEventHandler> {
   return {
     // 入站消息：按 (group_id, msg_id) 去重；自己的账号回流标 isOwn（A2）
     message: async (db, data) => {
@@ -52,8 +54,14 @@ export function defaultHandlers(): Record<string, GatewayEventHandler> {
     // 以下在后续里程碑接入：
     message_sent: async () => {}, // M4：回填出站行 msgId/sentAt，deliveryStatus → sent
     message_failed: async () => {}, // M4：deliveryStatus → failed + failCode
-    member_joined: async () => {}, // M3：写成员表、唤醒建群 job
-    member_left: async () => {}, // M3/M6：删成员表
+    // M3：写成员表 + 唤醒建群 job / 删成员表
+    member_joined: async (db, data) => {
+      if (!gateway) return
+      await notifyMemberJoined(db, String(data.groupId ?? ''), String(data.platformUserId ?? ''), gateway)
+    },
+    member_left: async (db, data) => {
+      await notifyMemberLeft(db, String(data.groupId ?? ''), String(data.platformUserId ?? ''))
+    },
     // A1：网关推账号终态 → 与操作员/发送错误同一条转移路径（副作用一致、终态幂等）
     account_status: async (db, data) => {
       const accountId = String(data.accountId ?? '')
